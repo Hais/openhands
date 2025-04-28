@@ -62,20 +62,22 @@ def initialize_runtime(
     logger.info('-' * 30)
     obs: Observation
 
-    action = CmdRunAction(command='cd /workspace')
+    workspace_base = runtime.config.workspace_base
+    action = CmdRunAction(command=f'cd {workspace_base}')
     logger.info(action, extra={'msg_type': 'ACTION'})
     obs = runtime.run_action(action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     if not isinstance(obs, CmdOutputObservation) or obs.exit_code != 0:
-        raise RuntimeError(f'Failed to change directory to /workspace.\n{obs}')
+        raise RuntimeError(f'Failed to change directory to {workspace_base}.\n{obs}')
 
     if platform == ProviderType.GITLAB and os.getenv('GITLAB_CI') == 'true':
-        action = CmdRunAction(command='sudo chown -R 1001:0 /workspace/*')
+        action = CmdRunAction(command=f'sudo chown -R 1001:0 {workspace_base}/*')
         logger.info(action, extra={'msg_type': 'ACTION'})
         obs = runtime.run_action(action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
     action = CmdRunAction(command='git config --global core.pager ""')
+
     logger.info(action, extra={'msg_type': 'ACTION'})
     obs = runtime.run_action(action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
@@ -99,16 +101,17 @@ async def complete_runtime(
     logger.info('-' * 30)
     obs: Observation
 
-    action = CmdRunAction(command='cd /workspace')
+    workspace_base = runtime.config.workspace_base
+    action = CmdRunAction(command=f'cd {workspace_base}')
     logger.info(action, extra={'msg_type': 'ACTION'})
     obs = runtime.run_action(action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     if not isinstance(obs, CmdOutputObservation) or obs.exit_code != 0:
         raise RuntimeError(
-            f'Failed to change directory to /workspace. Observation: {obs}'
+            f'Failed to change directory to {workspace_base}. Observation: {obs}'
         )
 
-    action = CmdRunAction(command='git config --global core.pager ""')
+    action = CmdRunAction(command='git config --list --show-origin --show-scope')
     logger.info(action, extra={'msg_type': 'ACTION'})
     obs = runtime.run_action(action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
@@ -174,6 +177,7 @@ async def process_issue(
     issue_handler: ServiceContextIssue | ServiceContextPR,
     repo_instruction: str | None = None,
     reset_logger: bool = False,
+    runtime: str = 'docker',
 ) -> ResolverOutput:
     # Setup the logger properly, so you can run multi-processing to parallelize processing
     if reset_logger:
@@ -215,7 +219,7 @@ async def process_issue(
 
     config = AppConfig(
         default_agent='CodeActAgent',
-        runtime='docker',
+        runtime=runtime,
         max_budget_per_task=4,
         max_iterations=max_iterations,
         sandbox=sandbox_config,
@@ -372,6 +376,7 @@ async def resolve_issue(
     comment_id: int | None,
     reset_logger: bool = False,
     base_domain: str | None = None,
+    runtime: str = 'docker',
 ) -> None:
     """Resolve a single issue.
 
@@ -392,6 +397,7 @@ async def resolve_issue(
         comment_id: Optional ID of a specific comment to focus on.
         reset_logger: Whether to reset the logger for multiprocessing.
         base_domain: The base domain for the git server (defaults to "github.com" for GitHub and "gitlab.com" for GitLab)
+        runtime: The runtime to use (e.g., "docker", "local").
     """
     # Determine default base_domain based on platform
     if base_domain is None:
@@ -535,6 +541,7 @@ async def resolve_issue(
             issue_handler,
             repo_instruction,
             reset_logger,
+            runtime=runtime,
         )
         output_fp.write(output.model_dump_json() + '\n')
         output_fp.flush()
@@ -657,6 +664,12 @@ def main() -> None:
         default=None,
         help='Base domain for the git server (defaults to "github.com" for GitHub and "gitlab.com" for GitLab)',
     )
+    parser.add_argument(
+        '--runtime',
+        type=str,
+        default='docker',
+        help='Runtime to use (e.g., "docker", "local").',
+    )
 
     my_args = parser.parse_args()
 
@@ -664,8 +677,16 @@ def main() -> None:
 
     runtime_container_image = my_args.runtime_container_image
 
+    runtime = my_args.runtime
+
     if runtime_container_image is not None and base_container_image is not None:
         raise ValueError('Cannot provide both runtime and base container images.')
+    
+    if runtime == 'local':
+        if runtime_container_image is not None:
+            raise ValueError('Cannot provide both runtime and runtime container images.')
+        if base_container_image is not None:
+            raise ValueError('Cannot provide both runtime and base container images.')
 
     if (
         runtime_container_image is None
@@ -751,6 +772,7 @@ def main() -> None:
             issue_number=my_args.issue_number,
             comment_id=my_args.comment_id,
             base_domain=my_args.base_domain,
+            runtime=runtime,
         )
     )
 
